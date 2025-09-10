@@ -1,5 +1,11 @@
 import axios from 'axios'
 
+// Configure axios base URL from build-time env (Vite)
+const API_BASE = (import.meta as any)?.env?.VITE_API_BASE_URL || ''
+if (API_BASE) {
+  axios.defaults.baseURL = API_BASE
+}
+
 export interface Transaction {
   date?: string | null
   description?: string | null

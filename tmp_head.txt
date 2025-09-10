@@ -1,0 +1,260 @@
+import { useEffect, useRef, useState } from 'react'
+import { AnalyzeResult, apiAsk, apiAnalyze, apiParse, Transaction, ParseResponse } from '../api'
+import ToolResultsCardAdv from './ToolResultsCardAdv'
+
+export interface Message { role: 'user' | 'assistant'; content: string; toolResults?: any; toolMissing?: string[]; ts?: number }
+
+export default function Chat({
+  analytics,
+  onAnalytics,
+  messages,
+  onMessagesChange,
+  streaming = true,
+  model,
+  threadId,
+}: {
+  analytics: AnalyzeResult | null
+  onAnalytics: (a: AnalyzeResult) => void
+  messages?: Message[]
+  onMessagesChange?: (m: Message[]) => void
+  streaming?: boolean
+  model?: string
+  threadId?: string
+}) {
+  const TypingDots = () => (
+    <span className="typing-dots" aria-label="Assistant is typing">
+      <span className="typing-dot"></span>
+      <span className="typing-dot"></span>
+      <span className="typing-dot"></span>
+    </span>
+  )
+
+  const [internalMsgs, setInternalMsgs] = useState<Message[]>(messages || [])
+  const [input, setInput] = useState('')
+  const [busy, setBusy] = useState(false)
+  const fileRef = useRef<HTMLInputElement | null>(null)
+  const [editingIdx, setEditingIdx] = useState<number | null>(null)
+  const [editDraft, setEditDraft] = useState<string>('')
+  const [dqScore, setDqScore] = useState<number | null>(null)
+  const [attachedFiles, setAttachedFiles] = useState<File[]>([])
+  // PDF mapping wizard removed with local PDF parser deprecation
+  const MAX_PDF_MB = 20
+  const MAX_TABLE_MB = 8
+  const ACCEPTED_EXTS = ['.pdf', '.csv', '.xlsx', '.xls']
+  // UI state for drag and drop and scroll helpers
+  const [dragOver, setDragOver] = useState(false)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const [showJump, setShowJump] = useState(false)
+
+  const msgs = messages ?? internalMsgs
+  const setMessages = (m: Message[] | ((prev: Message[]) => Message[])) => {
+    const base = messages ?? internalMsgs
+    const next = typeof m === 'function' ? (m as any)(base) : m
+    setInternalMsgs(next)
+    if (onMessagesChange) onMessagesChange(next)
+  }
+
+  // Persist drafts per thread
+  const draftKey = (threadId ? `draft_${threadId}` : 'draft_default')
+  const loadDraft = () => {
+    try {
+      const v = localStorage.getItem(draftKey)
+      if (v !== null) setInput(v)
+    } catch {}
+  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(loadDraft, [threadId])
+  const saveDraft = (val: string) => { try { localStorage.setItem(draftKey, val) } catch {} }
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    // Auto-scroll to bottom when new messages arrive unless user scrolled up
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200
+    if (nearBottom) {
+      requestAnimationFrame(() => el.scrollTo({ top: el.scrollHeight }))
+    }
+  }, [msgs.length])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowUp' && (document.activeElement as HTMLElement)?.tagName !== 'TEXTAREA') {
+        if (!input && msgs.length > 0) {
+          // find last user message
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            if (msgs[i].role === 'user') { setEditingIdx(i); setEditDraft(msgs[i].content); break }
+          }
+        }
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [input, msgs])
+
+  const ToolResultsCard = ({ results, missing }: { results: any; missing: string[] }) => {
+    const mp = results?.mortgage_payment
+    const af = results?.affordability
+    const hasAny = !!mp || !!af || (missing && missing.length > 0)
+    if (!hasAny) return null
+    return (
+      <div className="border border-zinc-800/70 rounded-xl bg-zinc-900/40">
+        <div className="p-3 border-b border-zinc-800/60 text-zinc-300 text-sm">Tool Results</div>
+        <div className="p-3 grid gap-3 md:grid-cols-2">
+          {mp && (
+            <div className="rounded-lg bg-zinc-900/50 border border-zinc-800/60 p-3">
+              <div className="font-medium text-zinc-100">Mortgage Payment</div>
+              <div className="mt-1 text-sm text-zinc-300">Rate: {(mp.annual_rate*100).toFixed(2)}% • Term: {mp.term_months} mo</div>
+              <div className="mt-2 text-sm text-zinc-200">
+                <div>PI: ${mp.monthly_pi.toFixed ? mp.monthly_pi.toFixed(2) : mp.monthly_pi}</div>
+                <div>Taxes: ${mp.monthly_taxes.toFixed ? mp.monthly_taxes.toFixed(2) : mp.monthly_taxes}</div>
+                <div>Insurance: ${mp.monthly_insurance.toFixed ? mp.monthly_insurance.toFixed(2) : mp.monthly_insurance}</div>
+                {mp.monthly_hoa ? <div>HOA: ${mp.monthly_hoa.toFixed ? mp.monthly_hoa.toFixed(2) : mp.monthly_hoa}</div> : null}
+                {mp.monthly_pmi ? <div>PMI: ${mp.monthly_pmi.toFixed ? mp.monthly_pmi.toFixed(2) : mp.monthly_pmi}</div> : null}
+                <div className="mt-1 font-semibold">PITI: ${mp.monthly_piti.toFixed ? mp.monthly_piti.toFixed(2) : mp.monthly_piti}</div>
+              </div>
+            </div>
+          )}
+          {af && (
+            <div className="rounded-lg bg-zinc-900/50 border border-zinc-800/60 p-3">
+              <div className="font-medium text-zinc-100">Affordability</div>
+              <div className="mt-1 text-sm text-zinc-300">Binding: {af.binding_constraint} • PITI at max: ${af.piti_at_max.toFixed ? af.piti_at_max.toFixed(2) : af.piti_at_max}</div>
+              <div className="mt-2 text-sm text-zinc-200">
+                <div>Max Price: ${af.max_price.toLocaleString?.() || af.max_price}</div>
+                {af.breakdown && (
+                  <div className="mt-1 text-zinc-300">
+                    <div>PI: ${af.breakdown.pi.toFixed ? af.breakdown.pi.toFixed(2) : af.breakdown.pi}</div>
+                    <div>Taxes: ${af.breakdown.taxes.toFixed ? af.breakdown.taxes.toFixed(2) : af.breakdown.taxes}</div>
+                    <div>Ins: ${af.breakdown.insurance.toFixed ? af.breakdown.insurance.toFixed(2) : af.breakdown.insurance}</div>
+                    {af.breakdown.hoa ? <div>HOA: ${af.breakdown.hoa.toFixed ? af.breakdown.hoa.toFixed(2) : af.breakdown.hoa}</div> : null}
+                    {af.breakdown.pmi ? <div>PMI: ${af.breakdown.pmi.toFixed ? af.breakdown.pmi.toFixed(2) : af.breakdown.pmi}</div> : null}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          {missing && missing.length > 0 && (
+            <div className="rounded-lg bg-amber-950/30 border border-amber-800/60 p-3 text-amber-200">
+              <div className="font-medium">Missing Inputs</div>
+              <div className="text-sm mt-1">Please provide: {missing.join(', ')}</div>
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  const attach = async (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    const arr = Array.from(files)
+    const skipped: string[] = []
+    const filtered = arr.filter(f => {
+      const lower = f.name.toLowerCase()
+      const okType = ACCEPTED_EXTS.some(ext => lower.endsWith(ext))
+      if (!okType) { skipped.push(`${f.name}: unsupported type`); return false }
+      return true
+    })
+    const pdfs = filtered.filter(f => (f.type === 'application/pdf') || f.name.toLowerCase().endsWith('.pdf'))
+    const tables = filtered.filter(f => !pdfs.includes(f))
+    // PDFs: with OpenAI provider, direct doc Q&A upload is not supported here
+    if (pdfs.length > 0) {
+      const tooBig = pdfs.filter(f => f.size > MAX_PDF_MB * 1024 * 1024)
+      const ok = pdfs.filter(f => !tooBig.includes(f))
+      if (tooBig.length > 0) skipped.push(...tooBig.map(f => `${f.name}: exceeds ${MAX_PDF_MB}MB limit`))
+      if (ok.length > 0) {
+        setMessages(m => [...m, { role: 'assistant', content: `PDF Q&A is not available with the current LLM provider. Please attach CSV/XLSX exports for accurate analytics.`, ts: Date.now() }])
+      }
+    }
+    if (tables.length === 0) { if (skipped.length > 0) setMessages(m => [...m, { role: 'assistant', content: `Skipped: ${skipped.join('; ')}`, ts: Date.now() }]); return }
+    setBusy(true)
+    try {
+      const tooBigTables = tables.filter(f => f.size > MAX_TABLE_MB * 1024 * 1024)
+      const okTables = tables.filter(f => !tooBigTables.includes(f))
+      if (tooBigTables.length > 0) skipped.push(...tooBigTables.map(f => `${f.name}: exceeds ${MAX_TABLE_MB}MB limit`))
+      const parsed: ParseResponse = await apiParse(okTables)
+      const tx: Transaction[] = parsed.transactions
+      if (tx.length > 0) {
+        const analyzed = await apiAnalyze(tx)
+        onAnalytics(analyzed)
+        setDqScore(typeof parsed.dq_score === 'number' ? parsed.dq_score : null)
+        const note = parsed && parsed.notes ? `\n\n${parsed.notes}` : ''
+        const dqMsg = typeof parsed.dq_score === 'number' ? `\nData Quality: ${parsed.dq_score}/100` : ''
+        const warnMsg = parsed.warnings && parsed.warnings.length > 0 ? `\nWarnings: ${parsed.warnings.slice(0,3).join('; ')}` : ''
+        const skipMsg = skipped.length > 0 ? `\nSkipped: ${skipped.join('; ')}` : ''
+        setMessages(m => [...m, { role: 'assistant', content: `Processed ${tx.length} transactions from ${parsed.files.length} file(s). You can now ask questions.${dqMsg}${warnMsg}${skipMsg}${note}`, ts: Date.now() }])
+      } else {
+        const skipMsg = skipped.length > 0 ? ` Skipped: ${skipped.join('; ')}` : ''
+        setMessages(m => [...m, { role: 'assistant', content: `No transactions were detected from the attached CSV/XLSX files.${skipMsg}`, ts: Date.now() }])
+      }
+    } catch (err: any) {
+      let details = ''
+      try {
+        if (err?.response) {
+          const st = err.response.status
+          const data = err.response.data
+          const msg = (data && (data.detail || data.message)) || (typeof data === 'string' ? data : '')
+          details = ` (status ${st}${msg ? `: ${msg}` : ''})`
+        } else if (err?.message) {
+          details = ` (${err.message})`
+        }
+      } catch {}
+      setMessages(m => [...m, { role: 'assistant', content: `Failed to process files. Ensure they are valid CSV/XLSX.${details}`, ts: Date.now() }])
+    } finally {
+      setBusy(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  const resendWithText = async (idx: number, q: string) => {
+    if (analytics && dqScore !== null && dqScore < 70) {
+      setMessages(m => [...m, { role: 'assistant', content: `Your data quality score is ${dqScore}/100. For more reliable analytics, please try CSV/XLSX exports from your bank.`, ts: Date.now() }])
+      // wizard removed
+    }
+    const question = (q || '').trim(); if (!question) return
+    setBusy(true)
+    try {
+      if (streaming) {
+        setMessages(m => {
+          const base = m.slice(0, idx + 1)
+          return [...base, { role: 'assistant', content: '', ts: Date.now() }]
+        })
+        const resp = await fetch('/api/ask/stream', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ analytics: analytics ?? null, question, model })
+        })
+        if (!resp.ok || !resp.body) throw new Error('Stream failed')
+        const reader = resp.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; let ended = false
+        while (true) {
+          const { value, done } = await reader.read(); if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          let cut
+          while ((cut = buffer.indexOf('\n\n')) !== -1) {
+            const raw = buffer.slice(0, cut).trim(); buffer = buffer.slice(cut + 2)
+            if (!raw.startsWith('data:')) continue
+            const jsonStr = raw.slice(5).trim()
+            try {
+              const evt = JSON.parse(jsonStr)
+              if (evt.type === 'tools') {
+                setMessages(m => [...m, { role: 'assistant', content: '', toolResults: evt.results || {}, toolMissing: evt.missing || [], ts: Date.now() }])
+              } else if (evt.type === 'token') {
+                setMessages(m => {
+                  const copy = m.slice(); const last = copy[copy.length - 1]
+                  if (last && last.role === 'assistant') last.content += evt.content || ''
+                  return copy
+                })
+              } else if (evt.type === 'message') {
+                setMessages(m => [...m, { role: 'assistant', content: evt.content || '', ts: Date.now() }])
+              } else if (evt.type === 'done') {
+                ended = true
+              }
+            } catch {}
+          }
+          if (ended) break
+        }
+      } else {
+        const { answer } = await apiAsk(analytics ?? null, question, model)
+        setMessages(m => {
+          const base = m.slice(0, idx + 1)
+          return [...base, { role: 'assistant', content: answer, ts: Date.now() }]
+        })
+      }
+    } catch {
+      setMessages(m => [...m, { role: 'assistant', content: 'Could not reach the LLM provider. Check your API key (e.g., OPENAI_API_KEY) and try again.', ts: Date.now() }])

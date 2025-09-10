@@ -46,6 +46,8 @@ export default function Chat({
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const [showJump, setShowJump] = useState(false)
 
+  const API_BASE = (import.meta as any)?.env?.VITE_API_BASE_URL || ''
+
   const msgs = messages ?? internalMsgs
   const setMessages = (m: Message[] | ((prev: Message[]) => Message[])) => {
     const base = messages ?? internalMsgs
@@ -217,7 +219,7 @@ export default function Chat({
           const base = m.slice(0, idx + 1)
           return [...base, { role: 'assistant', content: '', ts: Date.now() }]
         })
-        const resp = await fetch('/api/ask/stream', {
+        const resp = await fetch((API_BASE || '') + '/api/ask/stream', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ analytics: analytics ?? null, question, model })
         })
         if (!resp.ok || !resp.body) throw new Error('Stream failed')
@@ -292,7 +294,7 @@ export default function Chat({
         setMessages(m => [...m, { role: 'assistant', content: `PDF Q&A is not available with the current LLM provider. Please attach CSV/XLSX exports for accurate analytics.`, ts: Date.now() }])
       } else if (streaming) {
         setMessages(m => [...m, { role: 'assistant', content: '', ts: Date.now() }])
-        const resp = await fetch('/api/ask/stream', {
+        const resp = await fetch((API_BASE || '') + '/api/ask/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ analytics: analytics ?? null, question: q, model })
