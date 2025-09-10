@@ -1,0 +1,10 @@
+name: ExampleBank v1
+anchors:
+  - Account Summary
+  - Transaction Details
+columns:
+  date: [40, 120]
+  description: [125, 380]
+  amount: [400, 9999]
+# Optional: hint for date format; parser still attempts multiple
+date_format: "%m/%d/%Y"

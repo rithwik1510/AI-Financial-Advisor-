@@ -1,0 +1,67 @@
+Context: AI Financial Advisor (Local Parsing + Gemini Q&A)
+
+Purpose
+- Privacy‑respecting personal finance analysis and coaching. Parses bank statements locally (CSV/XLSX), computes key metrics, and uses Gemini to compose advice and read attached PDFs when requested.
+
+Tech Stack
+- Backend: FastAPI (Python), endpoints: /api/parse, /api/analyze, /api/ask, /api/ask/stream (SSE), /api/ask/docs, /api/tools/{mortgage_payment,affordability}, /api/health, /api/llm/status
+- Services: parser, analytics, categorizer, tools, templates, dq, reconcile, llm_client (Gemini)
+- Schemas: Transaction, ParseResponse, AnalyzeInput/Result, AskInput/Response (Pydantic)
+- Frontend: React + Vite + Tailwind, Chart.js (react-chartjs-2), axios
+- CLI: analyze_financial_data.py (local CSV/XLSX analyzer)
+
+Backend Highlights
+- Parsing: CSV/XLSX first‑class. PDF parsing is disabled locally; PDFs are analyzed via Gemini with `/api/ask/docs`. Normalizes (CSV/XLSX) to date, description, amount, currency, category, account, source.
+- Analytics (compute_analytics): totals, monthly aggregates, by_category, by_merchant, savings_rate, DTI, emergency_fund_months, discretionary_share, health_score, insights, anomalies, recurring detection.
+- Budgets: `AnalyzeInput` supports `budgets` and `category_rules`; result includes `budget_variance` (avg monthly actual vs target by category).
+- LLM: Gemini (`GEMINI_MODEL` default `gemini-1.5-pro`). `.env` auto‑loaded; `/api/llm/status` returns precise configuration errors. `/api/ask/docs` returns an error payload/502 on failure (front‑end surfaces it nicely).
+- Orchestration: `/api/ask` planner selects tools; `/api/ask/stream` emits SSE events `{type: tools|token|message|done}`.
+- Dev: `backend/run_dev.ps1` prompts for API key, writes `backend/.env`, starts Uvicorn.
+
+Tools (Deterministic Calculators)
+- mortgage_payment: PI/PITI given principal or price+down; supports tax/ins/HOA/PMI monthly or annual rates.
+- affordability: max price under 28/36 DTI caps; returns PITI breakdown and binding constraint.
+
+Frontend Highlights
+- Chat: attachments (PDF/CSV/XLSX), streaming tokens, planner tool results, better error surfacing, timestamps, message actions (Copy/Quote/Regenerate), jump‑to‑latest.
+- Tool result cards: compact headers, collapsible details, “Edit assumptions” with inline recalc (PITI/Affordability), Copy summary.
+- Drag‑and‑drop: composer accepts files; shows chips with size and remove.
+- Dashboard: budgets UI (set monthly targets); Budgets vs Actual (avg monthly) table; charts and summary unchanged.
+- Sidebar: per‑thread menu (⋯) with Rename/Pin/Delete; pinned float to top; updated list order by last activity.
+- Command palette: Ctrl/Cmd+K for New chat, Rename/Delete current, Check LLM, Toggle model, Open Settings.
+- Theme: purple→fuchsia gradients and zinc surfaces throughout; reusable tokens in `src/styles/index.css`.
+
+CLI
+- analyze_financial_data.py: local analysis for CSV/XLSX; mirrors backend analytics; intentionally no PDF.
+
+Known Issues / Gaps
+- PDF JSON “Review & Import” not yet implemented (planned): strict JSON + citations + confirm to merge.
+- Category rules UI not yet present, but backend supports rules; will surface in upcoming sprint.
+- Tests: none yet; suggested to add unit tests for tools/analytics; mock LLM client.
+
+Run Instructions (Dev)
+- Backend
+  - Easiest: `backend/run_dev.ps1` (prompts for key, starts server)
+  - Manual: create venv, install, set `GEMINI_API_KEY`, run Uvicorn.
+  - Health: `GET http://localhost:8000/api/llm/status`.
+- Frontend
+  - `frontend/run_dev.ps1` or `npm run dev` and open http://localhost:5173
+
+Product Goals
+- Reliable, privacy‑first financial advisor with a modern, approachable UI; clear insights and actionable guidance.
+
+Design System
+- Dark theme with soft neutrals; accent purple/fuchsia; accessible contrast. Components use consistent borders, shadows, and motion; typing indicator and skeleton shimmer for loading.
+
+Roadmap (Updated)
+1) PDF JSON import (strict schema + citations) with review/confirm to analytics.
+2) Category rules UI (contains/regex) + recompute + diff.
+3) Micro‑polish & tokens rollout; refine tool cards and add skeletons on recalc.
+4) Tests & CI for analytics/tools and planner glue.
+
+Session Update – 2025‑09‑10
+- Added run scripts: `backend/run_dev.ps1`, `frontend/run_dev.ps1`; backend auto‑loads `.env`.
+- Chat: tool result cards (edit + collapse), drag‑and‑drop with chips, message actions, timestamps, jump‑to‑latest.
+- Sidebar: thread menu with Rename/Pin/Delete; ordering by last activity.
+- Dashboard: Budgets UI + variance; backend supports `budgets` and `category_rules`.
+- Improved `/api/llm/status` accuracy and `/api/ask/docs` error propagation.

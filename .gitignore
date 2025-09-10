@@ -1,0 +1,28 @@
+# Root project gitignore
+
+# Python (backend)
+backend/.venv/
+backend/__pycache__/
+backend/**/*.pyc
+backend/.pytest_cache/
+backend/.mypy_cache/
+backend/.coverage
+
+# Node (frontend)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Environment files (keep example, ignore real)
+backend/.env
+!backend/.env.example
+
+# Build artifacts
+*.log
+

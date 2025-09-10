@@ -1,0 +1,358 @@
+import { useEffect, useRef, useState } from 'react'
+import { AnalyzeResult, apiAsk, apiAnalyze, apiParse, Transaction, ParseResponse } from '../api'
+import MappingWizardModal from './MappingWizardModal'
+
+export interface Message { role: 'user' | 'assistant'; content: string }
+
+export default function Chat({
+  analytics,
+  onAnalytics,
+  messages,
+  onMessagesChange,
+  streaming = true,
+  model,
+  threadId,
+}: {
+  analytics: AnalyzeResult | null
+  onAnalytics: (a: AnalyzeResult) => void
+  messages?: Message[]
+  onMessagesChange?: (m: Message[]) => void
+  streaming?: boolean
+  model?: string
+  threadId?: string
+}) {
+  const TypingDots = () => (
+    <span className="typing-dots" aria-label="Assistant is typing">
+      <span className="typing-dot"></span>
+      <span className="typing-dot"></span>
+      <span className="typing-dot"></span>
+    </span>
+  )
+  const [internalMsgs, setInternalMsgs] = useState<Message[]>(messages || [])
+  const [input, setInput] = useState('')
+  const [busy, setBusy] = useState(false)
+  const fileRef = useRef<HTMLInputElement | null>(null)
+  const [editingIdx, setEditingIdx] = useState<number | null>(null)
+  const [editDraft, setEditDraft] = useState<string>('')
+  const [dqScore, setDqScore] = useState<number | null>(null)
+  const [wizardOpen, setWizardOpen] = useState(false)
+
+  const msgs = messages ?? internalMsgs
+  const setMessages = (m: Message[] | ((prev: Message[]) => Message[])) => {
+    const base = messages ?? internalMsgs
+    const next = typeof m === 'function' ? (m as any)(base) : m
+    // Optimistic local update so user sees their message immediately
+    setInternalMsgs(next)
+    if (onMessagesChange) onMessagesChange(next)
+  }
+
+  // Persist drafts per thread
+  const draftKey = (threadId ? `draft_${threadId}` : 'draft_default')
+  const loadDraft = () => {
+    try {
+      const v = localStorage.getItem(draftKey)
+      if (v !== null) setInput(v)
+    } catch {}
+  }
+  // Load when threadId changes
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(loadDraft, [threadId])
+  const saveDraft = (val: string) => { try { localStorage.setItem(draftKey, val) } catch {} }
+
+  const attach = async (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    setBusy(true)
+    try {
+      const arr = Array.from(files)
+      const parsed: ParseResponse = await apiParse(arr)
+      const tx: Transaction[] = parsed.transactions
+      if (tx.length > 0) {
+        const analyzed = await apiAnalyze(tx)
+        onAnalytics(analyzed)
+        setDqScore(typeof parsed.dq_score === 'number' ? parsed.dq_score : null)
+        const note = parsed && parsed.notes ? `\n\n${parsed.notes}` : ''
+        const dqMsg = typeof parsed.dq_score === 'number' ? `\nData Quality: ${parsed.dq_score}/100` : ''
+        const warnMsg = parsed.warnings && parsed.warnings.length > 0 ? `\nWarnings: ${parsed.warnings.slice(0,3).join('; ')}` : ''
+        setMessages(m => [...m, { role: 'assistant', content: `Processed ${tx.length} transactions from ${parsed.files.length} file(s). You can now ask questions.${dqMsg}${warnMsg}${note}` }])
+      } else {
+        setMessages(m => [...m, { role: 'assistant', content: 'No transactions were detected. If you uploaded PDFs, try CSV/XLSX exports or a different PDF version.' }])
+      }
+    } catch (err: any) {
+      let details = ''
+      try {
+        if (err?.response) {
+          const st = err.response.status
+          const data = err.response.data
+          const msg = (data && (data.detail || data.message)) || (typeof data === 'string' ? data : '')
+          details = ` (status ${st}${msg ? `: ${msg}` : ''})`
+        } else if (err?.message) {
+          details = ` (${err.message})`
+        }
+      } catch {}
+      setMessages(m => [...m, { role: 'assistant', content: `Failed to process files. Ensure they are valid PDF/CSV/XLSX.${details}` }])
+    } finally {
+      setBusy(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  const resendWithText = async (idx: number, q: string) => {
+    if (!analytics) {
+      setMessages(m => [...m, { role: 'assistant', content: 'Attach statements first so I can analyze your data locally.' }])
+      return
+    }
+    if (dqScore !== null && dqScore < 70) {
+      setMessages(m => [...m, { role: 'assistant', content: `Your data quality score is ${dqScore}/100, which is too low for reliable advice. Please try CSV/XLSX exports from your bank or a clearer PDF.` }])
+      setWizardOpen(true)
+      return
+    }
+    const question = (q || '').trim(); if (!question) return
+    setBusy(true)
+    try {
+      if (streaming) {
+        setMessages(m => {
+          const base = m.slice(0, idx + 1)
+          return [...base, { role: 'assistant', content: '' }]
+        })
+        const resp = await fetch('/api/ask/stream', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ analytics, question, model })
+        })
+        if (!resp.ok || !resp.body) throw new Error('Stream failed')
+        const reader = resp.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; let ended = false
+        while (true) {
+          const { value, done } = await reader.read(); if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          let cut
+          while ((cut = buffer.indexOf('\n\n')) !== -1) {
+            const raw = buffer.slice(0, cut).trim(); buffer = buffer.slice(cut + 2)
+            if (!raw.startsWith('data:')) continue
+            const jsonStr = raw.slice(5).trim()
+            try {
+              const evt = JSON.parse(jsonStr)
+              if (evt.type === 'token') {
+                setMessages(m => {
+                  const copy = m.slice(); const last = copy[copy.length - 1]
+                  if (last && last.role === 'assistant') last.content += evt.content || ''
+                  return copy
+                })
+              } else if (evt.type === 'message') {
+                setMessages(m => [...m, { role: 'assistant', content: evt.content || '' }])
+              } else if (evt.type === 'done') {
+                ended = true
+              }
+            } catch {}
+          }
+          if (ended) break
+        }
+      } else {
+        const { answer } = await apiAsk(analytics, question, model)
+        setMessages(m => {
+          const base = m.slice(0, idx + 1)
+          return [...base, { role: 'assistant', content: answer }]
+        })
+      }
+    } catch {
+      setMessages(m => [...m, { role: 'assistant', content: 'Could not reach the LLM provider. Check your API key (e.g., GEMINI_API_KEY) and try again.' }])
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const startEdit = (idx: number) => { setEditingIdx(idx); setEditDraft(msgs[idx]?.content || '') }
+  const cancelEdit = () => { setEditingIdx(null); setEditDraft('') }
+  const saveAndResend = async (idx: number) => {
+    const newQ = (editDraft || '').trim(); if (!newQ) return
+    setMessages(m => {
+      const copy = m.slice(0, idx + 1)
+      if (copy[idx]) copy[idx] = { role: 'user', content: newQ }
+      return copy
+    })
+    setEditingIdx(null); setEditDraft('')
+    await resendWithText(idx, newQ)
+  }
+  const quickResend = async (idx: number) => {
+    const q = msgs[idx]?.content || ''
+    await resendWithText(idx, q)
+  }
+
+  const send = async () => {
+    if (!input.trim()) return
+    const q = input.trim()
+    setMessages(m => [...m, { role: 'user', content: q }])
+    setInput(''); saveDraft('')
+    if (!analytics) {
+      setMessages(m => [...m, { role: 'assistant', content: 'Attach statements first so I can analyze your data locally.' }])
+      return
+    }
+    setBusy(true)
+    try {
+      if (streaming) {
+        setMessages(m => [...m, { role: 'assistant', content: '' }])
+        const resp = await fetch('/api/ask/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ analytics, question: q, model })
+        })
+        if (!resp.ok || !resp.body) throw new Error('Stream failed')
+        const reader = resp.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        let ended = false
+        while (true) {
+          const { value, done } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          let idx
+          while ((idx = buffer.indexOf('\n\n')) !== -1) {
+            const raw = buffer.slice(0, idx).trim()
+            buffer = buffer.slice(idx + 2)
+            if (!raw.startsWith('data:')) continue
+            const jsonStr = raw.slice(5).trim()
+            try {
+              const evt = JSON.parse(jsonStr)
+              if (evt.type === 'token') {
+                setMessages(m => {
+                  const copy = m.slice()
+                  const last = copy[copy.length - 1]
+                  if (last && last.role === 'assistant') last.content += evt.content || ''
+                  return copy
+                })
+              } else if (evt.type === 'message') {
+                setMessages(m => [...m, { role: 'assistant', content: evt.content || '' }])
+              } else if (evt.type === 'error') {
+                setMessages(m => [...m, { role: 'assistant', content: evt.message || 'Error during streaming' }])
+              } else if (evt.type === 'done') {
+                ended = true
+              }
+            } catch {}
+          }
+          if (ended) break
+        }
+      } else {
+        const { answer } = await apiAsk(analytics, q, model)
+        setMessages(m => [...m, { role: 'assistant', content: answer }])
+      }
+    } catch {
+      try {
+        const { answer } = await apiAsk(analytics, q, model)
+        setMessages(m => {
+          const copy = m.slice()
+          const last = copy[copy.length - 1]
+          if (last && last.role === 'assistant' && last.content === '') last.content = answer
+          else copy.push({ role: 'assistant', content: answer })
+          return copy
+        })
+      } catch {
+        setMessages(m => [...m, { role: 'assistant', content: 'Could not reach the LLM provider. Check your API key (e.g., GEMINI_API_KEY) and try again.' }])
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="h-full flex flex-col">
+      <MappingWizardModal open={wizardOpen} onClose={() => setWizardOpen(false)} />
+      {msgs.length > 0 ? (
+        <div className="flex-1 overflow-y-auto py-6">
+          <div className="space-y-6">
+            {msgs.map((m, idx) => (
+              <div key={idx} className="px-2 animate-fade-in">
+                {m.role === 'user' ? (
+                  <div className="mx-auto max-w-3xl text-right">
+                    {editingIdx === idx ? (
+                      <div className="inline-block bg-gradient-to-br from-purple-600 to-fuchsia-600 text-white px-4 py-3 rounded-2xl shadow-md shadow-purple-900/30 w-full max-w-2xl text-left">
+                        <textarea className="w-full bg-transparent outline-none resize-vertical" rows={3} value={editDraft} onChange={e => setEditDraft(e.target.value)} />
+                        <div className="mt-2 flex gap-2 justify-end text-xs">
+                          <button onClick={() => saveAndResend(idx)} className="px-3 py-1 rounded bg-white/20 hover:bg-white/30">Save & Resend</button>
+                          <button onClick={cancelEdit} className="px-3 py-1 rounded bg-white/10 hover:bg-white/20">Cancel</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="inline-block bg-gradient-to-br from-purple-600 to-fuchsia-600 text-white px-4 py-2 rounded-2xl shadow-md shadow-purple-900/30 transition-transform">
+                        {m.content}
+                        <div className="mt-1 text-[11px] opacity-80 select-none text-right">
+                          <button onClick={() => startEdit(idx)} className="underline decoration-white/30 hover:decoration-white mr-3">Edit</button>
+                          <button onClick={() => quickResend(idx)} className="underline decoration-white/30 hover:decoration-white">Resend</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="mx-auto max-w-3xl">
+                    <div className="whitespace-pre-wrap leading-relaxed text-zinc-100 px-2 py-2">
+                      {m.content && m.content.length > 0 ? m.content : (busy && m.role==='assistant' && idx === msgs.length - 1 ? <TypingDots /> : null)}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+            {busy && (msgs.length === 0 || msgs[msgs.length-1]?.role === 'user') && (
+              <div className="px-2 animate-fade-in">
+                <div className="mx-auto max-w-3xl">
+                  <div className="whitespace-pre-wrap leading-relaxed text-zinc-100 px-2 py-2">
+                    <TypingDots />
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="flex-1 pt-16">
+          <div className="text-center px-4">
+            <h2 className="text-2xl font-semibold text-zinc-200">What can I help you with today?</h2>
+            <p className="mt-3 text-sm text-zinc-400">Attach statements below. Tip: CSV/XLSX exports give the most accurate results. PDF parsing is experimental and may miss rows on complex or scanned statements.</p>
+          </div>
+          <div className="mt-8 px-4">
+            <div className="max-w-3xl mx-auto relative group">
+              <input
+                className="w-full rounded-full bg-zinc-950/70 backdrop-blur border border-zinc-800 px-5 pr-28 py-4 text-zinc-100 placeholder:text-zinc-500 shadow-inner focus:outline-none focus:ring-2 focus:ring-purple-600 transition-all hover:shadow-[0_0_30px_-12px_rgba(168,85,247,0.45)]"
+                placeholder="Ask a question about your finances..."
+                value={input}
+                onChange={e => { setInput(e.target.value); saveDraft(e.target.value) }}
+                onKeyDown={e => e.key==='Enter' && send()}
+                disabled={busy}
+              />
+              <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                <button
+                  onClick={() => fileRef.current?.click()}
+                  disabled={busy}
+                  className="p-2 rounded-full text-zinc-300 hover:text-fuchsia-400 transition transform hover:scale-110 hover:shadow-[0_0_20px_rgba(216,180,254,0.35)]"
+                  aria-label="Attach files"
+                >
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M21 12.5L12.5 21C10 23.5 6 23.5 3.5 21C1 18.5 1 14.5 3.5 12L12 3.5C13.5 2 16 2 17.5 3.5C19 5 19 7.5 17.5 9L9 17.5C8 18.5 6.5 18.5 5.5 17.5C4.5 16.5 4.5 15 5.5 14L13 6.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </button>
+                <button
+                  onClick={send}
+                  disabled={busy}
+                  className="p-2 rounded-full text-white bg-gradient-to-br from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 transition transform hover:scale-110 shadow-lg shadow-purple-900/30"
+                  aria-label="Send"
+                >
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M4 12L20 4L12 20L11 13L4 12Z" fill="currentColor"/>
+                  </svg>
+                </button>
+              </div>
+              <input ref={fileRef} type="file" multiple className="hidden" accept=".pdf,.csv,.xlsx,.xls" onChange={(e) => attach(e.target.files)} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {msgs.length > 0 && (
+        <div className="mt-2 flex gap-2 items-center max-w-3xl mx-auto w-full sticky bottom-4 px-2 composer">
+          <input ref={fileRef} type="file" multiple className="hidden" accept=".pdf,.csv,.xlsx,.xls" onChange={(e) => attach(e.target.files)} />
+          <button className="px-3 py-2 rounded-2xl bg-gradient-to-br from-purple-700 to-fuchsia-700 hover:from-purple-600 hover:to-fuchsia-600 text-white shadow-lg shadow-purple-900/30 disabled:opacity-50 transition-all" onClick={() => fileRef.current?.click()} disabled={busy}>📎 Attach</button>
+          <input className="flex-1 border border-zinc-800 bg-zinc-950/80 backdrop-blur text-zinc-100 rounded-2xl px-4 py-3 disabled:bg-zinc-800 placeholder:text-zinc-500 shadow-inner focus:outline-none focus:ring-2 focus:ring-purple-600 transition-all" placeholder="Message your coach..." value={input} onChange={e => { setInput(e.target.value); saveDraft(e.target.value) }} onKeyDown={e => e.key==='Enter' && send()} disabled={busy} />
+          <button className="bg-gradient-to-br from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 text-white px-5 py-3 rounded-2xl disabled:opacity-50 shadow-lg shadow-purple-900/30 transition-all" onClick={send} disabled={busy}>{busy ? 'Sending...' : 'Send'}</button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+

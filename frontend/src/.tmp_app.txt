@@ -1,0 +1,96 @@
+import { useEffect, useMemo, useState } from 'react'
+import Chat, { Message } from './components/Chat'
+import { AnalyzeResult } from './api'
+import Sidebar, { ChatThread } from './components/Sidebar'
+import SettingsModal, { Settings } from './components/SettingsModal'
+
+export default function App() {
+  const [analytics, setAnalytics] = useState<AnalyzeResult | null>(null)
+  const [threads, setThreads] = useState<ChatThread[]>(() => {
+    try { return JSON.parse(localStorage.getItem('threads') || '[]') } catch { return [] }
+  })
+  const [activeId, setActiveId] = useState<string | null>(() => {
+    try { return localStorage.getItem('active_thread') } catch { return null }
+  })
+  const [messagesMap, setMessagesMap] = useState<Record<string, Message[]>>(() => {
+    try { return JSON.parse(localStorage.getItem('messages_map') || '{}') } catch { return {} }
+  })
+  const [settings, setSettings] = useState<Settings>(() => {
+    try { return JSON.parse(localStorage.getItem('settings') || '') } catch { return { streamResponses: true, saveHistory: true, reduceMotion: false, textSize: 'md' } }
+  })
+  const [settingsOpen, setSettingsOpen] = useState(false)
+
+  const ensureActive = () => {
+    if (activeId && threads.find(t => t.id === activeId)) return
+    const id = Date.now().toString()
+    const newThread: ChatThread = { id, title: 'New Chat', createdAt: Date.now() }
+    setThreads(t => { const nt=[newThread, ...t]; if (settings.saveHistory) localStorage.setItem('threads', JSON.stringify(nt)); return nt })
+    setActiveId(id); if (settings.saveHistory) localStorage.setItem('active_thread', id)
+    setMessagesMap(m => { const nm={...m, [id]: [] as any}; if (settings.saveHistory) localStorage.setItem('messages_map', JSON.stringify(nm)); return nm })
+  }
+
+  // Initialize a default thread if none
+  useEffect(() => {
+    if (!activeId || !threads.find(t => t.id === activeId)) {
+      ensureActive()
+    }
+  }, [activeId, threads])
+
+  const activeMessages = messagesMap[activeId || ''] || []
+
+  const updateMessages = (msgs: {role:'user'|'assistant';content:string}[]) => {
+    if (!activeId) return
+    setMessagesMap(m => { const nm={...m, [activeId]: msgs}; if(settings.saveHistory){ localStorage.setItem('messages_map', JSON.stringify(nm))}; return nm })
+    // Derive title from first user message
+    if (msgs.length > 0 && threads.find(t=>t.id===activeId)?.title === 'New Chat') {
+      const first = msgs.find(m => m.role==='user')
+      if (first) {
+        const title = first.content.slice(0,40) + (first.content.length>40?'…':'')
+        setThreads(ts => { const nt = ts.map(t => t.id===activeId ? {...t, title} : t); localStorage.setItem('threads', JSON.stringify(nt)); return nt })
+      }
+    }
+  }
+
+  const onNewChat = () => {
+    const id = Date.now().toString()
+    const newThread: ChatThread = { id, title: 'New Chat', createdAt: Date.now() }
+    const nt = [newThread, ...threads]
+    setThreads(nt); localStorage.setItem('threads', JSON.stringify(nt))
+    setActiveId(id); localStorage.setItem('active_thread', id)
+    const nm = { ...messagesMap, [id]: [] as any }
+    setMessagesMap(nm); localStorage.setItem('messages_map', JSON.stringify(nm))
+  }
+
+  const onSelectThread = (id: string) => {
+    setActiveId(id); localStorage.setItem('active_thread', id)
+  }
+
+  const openSettings = () => setSettingsOpen(true)
+  const closeSettings = () => setSettingsOpen(false)
+  const changeSettings = (s: Settings) => { setSettings(s); localStorage.setItem('settings', JSON.stringify(s)) }
+  const clearAll = () => {
+    localStorage.removeItem('threads'); localStorage.removeItem('active_thread'); localStorage.removeItem('messages_map'); localStorage.removeItem('settings')
+    setThreads([]); setMessagesMap({}); setActiveId(null)
+  }
+
+  return (
+    <div className="min-h-screen relative text-zinc-100 flex bg-gradient-to-br from-[#0b0318] via-black to-black">
+      <div className="pointer-events-none absolute inset-0 bg-animated-gradient opacity-40"></div>
+      <aside className="w-64 bg-zinc-950 border-r border-zinc-800 flex flex-col">
+        <Sidebar
+          threads={threads}
+          activeId={activeId}
+          onNewChat={onNewChat}
+          onSelect={onSelectThread}
+          onOpenSettings={openSettings}
+        />
+      </aside>
+      <main className="flex-1 p-4">
+        <div className="mx-auto max-w-5xl h-full">
+          <Chat analytics={analytics} onAnalytics={setAnalytics} messages={activeMessages} onMessagesChange={updateMessages} streaming={settings.streamResponses} />
+        </div>
+      </main>
+      <SettingsModal open={settingsOpen} settings={settings} onChange={changeSettings} onClose={closeSettings} onClearAll={clearAll} />
+    </div>
+  )
+}

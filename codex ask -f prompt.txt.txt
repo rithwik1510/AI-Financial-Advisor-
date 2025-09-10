@@ -1,0 +1,36 @@
+# Project: AI Financial Advisor (Gemini-powered)
+
+## Goal
+- Web app that parses financial statements (PDF/CSV)
+- AI chatbot gives advice based on spending patterns
+- Dashboard with charts & financial health score
+- Local parsing + hosted Gemini for Q&A/doc analysis
+
+## Backend (FastAPI)
+[ ] Setup FastAPI project
+[ ] PDF/CSV parser -> normalized JSON transactions
+[ ] Categorization engine (Food, Rent, etc.)
+[ ] Analytics engine (monthly totals, savings, health score)
+[ ] /ask endpoint -> send analytics + query to Gemini
+[ ] Return AI-generated advice
+
+## Frontend (React + Tailwind)
+[ ] Chat UI (like ChatGPT)
+[ ] File upload (PDF/CSV)
+[ ] Dashboard with:
+      - Pie chart (spending by category)
+      - Line chart (monthly trends)
+      - Financial health score
+
+## Privacy
+[ ] Parsing and analytics local
+[ ] Only analytics summaries + question (or attached docs for `/ask/docs`) go to Gemini
+[ ] Temporary local storage only
+[ ] Banner: "Your files stay local; questions go to Gemini"
+
+## Final Polish
+[ ] Goal planner (target savings simulation)
+[ ] Purchase feasibility (loan/EMI check)
+[ ] README + demo video
+[ ] Push to GitHub
+

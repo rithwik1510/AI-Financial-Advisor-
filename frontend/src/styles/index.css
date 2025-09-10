@@ -1,0 +1,91 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  /* Theme tokens */
+  --color-bg: #0a0a0b;
+  --color-surface: #0f0f14cc; /* semi */
+  --color-surface-strong: #0f0f14;
+  --color-border: #27272a; /* zinc-800 */
+  --color-text: #e4e4e7; /* zinc-200 */
+  --color-text-muted: #a1a1aa; /* zinc-400 */
+  --grad-from: #7c3aed; /* purple-600 */
+  --grad-to: #d946ef;   /* fuchsia-600 */
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.99); }
+  to { opacity: 1; transform: none; }
+}
+.animate-fade-in { animation: fade-in 300ms ease-out both; }
+
+@keyframes gradient-pan {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 100% 50%; }
+}
+.bg-animated-gradient {
+  background-image: linear-gradient(120deg, rgba(88,28,135,0.3), rgba(24,24,27,0.0), rgba(236,72,153,0.25));
+  background-size: 200% 200%;
+  animation: gradient-pan 12s ease-in-out infinite alternate;
+}
+
+html, body, #root { height: 100%; }
+body { @apply bg-gray-50 text-gray-900; }
+
+/* App-wide utility classes */
+.app-root { font-size: var(--app-text-size, 1rem); }
+.text-size-sm { --app-text-size: 0.95rem; }
+.text-size-md { --app-text-size: 1rem; }
+.text-size-lg { --app-text-size: 1.1rem; }
+
+/* Reduce motion toggle */
+.reduced-motion * { transition: none !important; }
+.reduced-motion .animate-fade-in { animation: none !important; }
+.reduced-motion .bg-animated-gradient { animation: none !important; }
+
+/* Settings modal close icon fix */
+.settings-modal-close-fix > button { color: transparent !important; }
+.settings-modal-close-fix > button::before { content: '×'; color: inherit; }
+
+/* Bottom composer Attach button label fix */
+.composer > button:nth-of-type(1) { /* file attach */
+  color: transparent; position: relative;
+}
+.composer > button:nth-of-type(1)::before {
+  content: 'Attach';
+  color: white; position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%);
+}
+
+/* Typing indicator (three dots) */
+.typing-dots { display: inline-flex; align-items: center; gap: 6px; height: 1.2em; }
+.typing-dot { width: 6px; height: 6px; background-color: rgb(212 212 216 / 0.9); border-radius: 50%; opacity: 0.3; animation: typing-bounce 1s infinite ease-in-out; }
+.typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes typing-bounce { 0%, 80%, 100% { transform: translateY(0); opacity: 0.3; } 40% { transform: translateY(-3px); opacity: 1; } }
+.reduced-motion .typing-dot { animation: none; opacity: 0.6; }
+
+/* Skeleton shimmer for streaming */
+.skeleton-line { position: relative; overflow: hidden; background: rgba(255,255,255,0.06); height: 10px; border-radius: 6px; }
+.skeleton-line::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, rgba(255,255,255,0.12), transparent); animation: shimmer 1.2s infinite; }
+.skeleton-sm { height: 8px; }
+.skeleton-md { height: 10px; }
+.skeleton-lg { height: 12px; }
+@keyframes shimmer { 100% { transform: translateX(100%); } }
+
+/* Reusable buttons */
+.btn-primary { background-image: linear-gradient(135deg, var(--grad-from), var(--grad-to)); color: white; }
+.btn-primary:hover { filter: brightness(1.05); }
+.btn-primary:active { transform: scale(0.98); }
+.btn-secondary { background-color: rgba(24,24,27,0.7); border: 1px solid var(--color-border); color: var(--color-text); }
+.btn-secondary:hover { background-color: rgba(39,39,42,0.7); }
+
+/* Card surface */
+.card { background: rgba(12,12,15,0.55); border: 1px solid var(--color-border); border-radius: 0.75rem; }
+.border-muted { border-color: var(--color-border) !important; }
+.text-muted { color: var(--color-text-muted); }

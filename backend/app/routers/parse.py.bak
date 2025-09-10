@@ -1,0 +1,59 @@
+from __future__ import annotations
+
+from typing import List
+
+from fastapi import APIRouter, UploadFile, File
+
+from ..schemas.models import ParseResponse, Transaction
+from ..services import parser
+
+
+router = APIRouter()
+
+
+@router.post("/parse", response_model=ParseResponse)
+async def parse_files(files: List[UploadFile] = File(...)):
+    transactions: List[Transaction] = []
+    filenames: List[str] = []
+    notes_parts: List[str] = []
+    for f in files:
+        filenames.append(f.filename)
+        content = await f.read()
+        name = f.filename.lower()
+        if name.endswith(".csv"):
+            tx = parser.parse_csv_bytes(content, f.filename)
+            transactions.extend(tx)
+            notes_parts.append(f"{f.filename}: parsed {len(tx)} from CSV/XLSX.")
+        elif name.endswith(".xlsx") or name.endswith(".xls"):
+            tx = parser.parse_excel_bytes(content, f.filename)
+            transactions.extend(tx)
+            notes_parts.append(f"{f.filename}: parsed {len(tx)} from CSV/XLSX.")
+        elif name.endswith(".pdf"):
+            tx = parser.parse_pdf_bytes(content, f.filename)
+            transactions.extend(tx)
+            # Attempt statement reconciliation summary for PDFs
+            try:
+                meta = parser.extract_pdf_statement_meta(content)
+                if meta:
+                    rec = parser.reconcile_transactions_with_meta(tx, meta)
+                    if rec.get("reconciled") is True:
+                        notes_parts.append(
+                            f"{f.filename}: reconciled ✓ (sum={rec['transactions_sum']}, delta={rec.get('expected_delta') or rec.get('totals_section_sum')})."
+                        )
+                    elif rec.get("reconciled") is False:
+                        notes_parts.append(
+                            f"{f.filename}: possible mismatch (sum={rec['transactions_sum']}, expected={rec.get('expected_delta') or rec.get('totals_section_sum')}, diff={rec.get('mismatch')})."
+                        )
+                    else:
+                        notes_parts.append(f"{f.filename}: no balance/totals section detected for reconciliation.")
+                else:
+                    notes_parts.append(f"{f.filename}: no metadata detected; parsed {len(tx)} candidate rows.")
+            except Exception:
+                notes_parts.append(f"{f.filename}: parsed {len(tx)} rows; reconciliation check unavailable.")
+        else:
+            # ignore unsupported
+            continue
+
+    notes = "Processed locally; data never leaves your system." + (" " + " ".join(notes_parts) if notes_parts else "")
+    return ParseResponse(transactions=transactions, files=filenames, notes=notes)
+
